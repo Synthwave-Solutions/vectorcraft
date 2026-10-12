@@ -1,0 +1,56 @@
+name: SynthPulse Raspberry Pi ARM64
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/synthpulse-pi.yml']
+permissions:
+  contents: write
+concurrency:
+  group: synthpulse-pi
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: storytold/craft-common-actions/actions/install-linux-deps@f0808a5ccbc32869248193ffab0de98d733de451
+        with:
+          deb-arch: arm64
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: synthpulse-pi-arm64
+      - name: Build own fork for Pi
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '0'
+        run: packaging/linux/package.sh --formats deb
+      - name: Validate release and write provenance
+        run: |
+          mkdir -p pi-release
+          find dist -name '*linux-aarch64.deb' -exec cp -t pi-release {} +
+          test "$(find pi-release -name '*.deb' | wc -l)" -ge 1
+          for package in pi-release/*.deb; do
+            test "$(dpkg-deb -f "$package" Architecture)" = arm64
+          done
+          python3 - <<'BUILD'
+          import json,os,pathlib,hashlib
+          p=pathlib.Path('pi-release')
+          data={'repository':os.environ['GITHUB_REPOSITORY'],'commit':os.environ['GITHUB_SHA'],'run':os.environ['GITHUB_RUN_ID'],'architecture':'arm64','hardware_tested':False,'sha256':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in p.glob('*.deb')}}
+          (p/'provenance.json').write_text(json.dumps(data,indent=2)+'\n')
+          (p/'SHA256SUMS').write_text(''.join(h+'  '+n+'\n' for n,h in data['sha256'].items()))
+          BUILD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthpulse-vectorcraft-pi-arm64
+          path: pi-release/
+      - name: Publish own GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "synthpulse-pi-${GITHUB_RUN_NUMBER}" pi-release/* --target "$GITHUB_SHA" --prerelease --title "SynthPulse vectorcraft - Raspberry Pi ARM64" --notes "Built from this Synthwave-Solutions fork. ARM64 package and checksum validation passed. Physical Pi validation remains pending; see provenance.json."
