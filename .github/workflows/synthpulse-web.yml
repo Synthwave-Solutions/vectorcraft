@@ -1,0 +1,52 @@
+name: SynthPulse Pi Web App
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/synthpulse-web.yml']
+permissions:
+  contents: write
+concurrency:
+  group: synthpulse-web
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: synthpulse-web
+      - uses: storytold/craft-common-actions/actions/install-trunk@f0808a5ccbc32869248193ffab0de98d733de451
+      - name: Build our browser app
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        run: packaging/web/package.sh
+      - name: Validate release and write provenance
+        run: |
+          mkdir -p pi-release
+          find dist -name '*-web-*.zip' -exec cp -t pi-release {} +
+          test "$(find pi-release -name '*.zip' | wc -l)" -ge 1
+          python3 - <<'BUILD'
+          import json,os,pathlib,hashlib
+          p=pathlib.Path('pi-release')
+          data={'repository':os.environ['GITHUB_REPOSITORY'],'commit':os.environ['GITHUB_SHA'],'run':os.environ['GITHUB_RUN_ID'],'architecture':'wasm32','hardware_tested':False,'sha256':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in p.glob('*.zip')}}
+          (p/'provenance.json').write_text(json.dumps(data,indent=2)+'\n')
+          (p/'SHA256SUMS').write_text(''.join(h+'  '+n+'\n' for n,h in data['sha256'].items()))
+          BUILD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthpulse-vectorcraft-web
+          path: pi-release/
+      - name: Publish own GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "synthpulse-web-${GITHUB_RUN_NUMBER}" pi-release/* --target "$GITHUB_SHA" --prerelease --title "SynthPulse vectorcraft - Raspberry Pi Web" --notes "Built from this Synthwave-Solutions fork. Browser build and checksum validation passed. Physical Pi validation remains pending; see provenance.json."
